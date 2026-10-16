@@ -1,0 +1,55 @@
+# =====================================================================
+# 3D Perception, Robotic Grasping & Pick-and-Place Configuration
+# =====================================================================
+
+# 1. Camera Configuration
+camera:
+  type: "auto"              # Options: "auto", "orbbec", "mock"
+  color_width: 640
+  color_height: 480
+  fps: 30
+  align_depth: true         # Depth-to-Color software/hardware alignment
+  depth_scale: 0.001        # Scale factor converting uint16 raw depth to meters (0.001 = mm to m)
+
+# 2. Vision Models (Grounding DINO + SAM)
+models:
+  dino_model_id: "IDEA-Research/grounding-dino-base"
+  sam_model_id: "facebook/sam-vit-base"
+  device: "auto"            # "auto" (selects cuda if available), "cuda", or "cpu"
+  box_threshold: 0.25       # Bounding box confidence threshold
+  text_threshold: 0.20      # Text-token similarity threshold
+  min_mask_area_px: 25      # Discard noisy/degenerate tiny masks
+
+# 3. 3D Geometry & 6-DoF Grasping Parameters
+grasp:
+  min_depth_m: 0.15         # Minimum valid depth in meters
+  max_depth_m: 3.50         # Maximum valid depth in meters
+  depth_percentile_low: 5.0
+  depth_percentile_high: 95.0
+  standoff_distance_m: 0.10 # Pre-grasp standoff distance (backed off along approach vector)
+  gripper_finger_clearance_mm: 15.0 # Extra jaw opening margin above object width
+  min_points_threshold: 15
+
+# 4. Placement & Tabletop Surface Analysis
+placement:
+  surface_prompt: "table . desk . surface ."   # Prompts used to detect supporting plane
+  ransac_distance_threshold_m: 0.015           # RANSAC plane distance threshold (1.5 cm)
+  ransac_max_iterations: 1500
+  grid_search_step_m: 0.04                     # Step size when scanning table for free spots (4 cm)
+  free_space_radius_m: 0.12                    # Radius of clear obstacle-free zone needed (12 cm)
+  target_standoff_distance_m: 0.22             # Desired distance from target object (e.g. 22 cm from laptop)
+  preferred_sides: ["right", "front", "left"]  # Candidate placement directions relative to reference object
+  max_placement_distance_m: 0.50               # Max search distance from reference object
+  height_offset_m: 0.02                        # Height above detected surface for release target (2 cm)
+
+# 5. Natural Language Command Parser
+nlp:
+  default_action: "pick_and_place"
+  fallback_surface: "table"
+
+# 6. Visualization & UI
+visualization:
+  axis_length_m: 0.065       # Length of 3D grasp coordinate frame arrows (m)
+  mask_alpha: 0.45           # Segmentation mask transparency
+  show_surface_grid: true    # Render placement surface boundary & clearance circle
+  window_name: "Perception & Pick-and-Place (3D Grasp + Placement Pose)"

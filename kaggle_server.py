@@ -2,6 +2,7 @@
 kaggle_server.py - Runs on Kaggle Notebook with GPU acceleration.
 Receives RGB + Depth frames from local client over WebSocket/HTTP,
 runs Grounding DINO + SAM on CUDA, computes 6-DoF grasp poses,
+supporting surface plane analysis, and collision-free placement spots,
 and serves an interactive web dashboard with live video and JSON telemetry.
 """
 
@@ -21,12 +22,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from perception_pipeline.detector.grounded_sam import GroundedSAMDetector
-from perception_pipeline.geometry.grasp_estimator import GraspEstimator
+from perception_pipeline.pipeline import PerceptionPipeline
 from perception_pipeline.camera.orbbec_camera import CameraIntrinsics
-from perception_pipeline.visualizer import PerceptionVisualizer
 
-app = FastAPI(title="Kaggle 3D Perception & Grasping Server")
+app = FastAPI(title="Kaggle 3D Perception & Pick-and-Place Server")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,26 +35,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global perception state
-detector: Optional[GroundedSAMDetector] = None
-grasp_estimator = GraspEstimator()
-visualizer = PerceptionVisualizer()
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-current_prompt = "cup"
-box_threshold = 0.25
-text_threshold = 0.20
+pipeline: Optional[PerceptionPipeline] = None
+current_prompt = "pick up the cup and place it near laptop"
 
 
 @app.on_event("startup")
 def startup_event():
-    global detector
-    print(f"[*] Initializing Grounded-SAM on device: {device} (Kaggle GPU)...")
-    detector = GroundedSAMDetector(
-        device=device,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
-    )
+    global pipeline
+    print("[*] Initializing Perception & Pick-and-Place Pipeline on Kaggle GPU...")
+    # Initialize pipeline with mock camera since frames will stream in over WebSocket
+    pipeline = PerceptionPipeline(config_path="config.yaml", prefer_orbbec=False)
     print("[*] Models loaded and warm!")
 
 
@@ -63,35 +52,37 @@ HTML_DASHBOARD = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Kaggle 3D Perception Stream</title>
+    <title>Kaggle 3D Perception & Pick-and-Place</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121214; color: #fff; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: auto; }
+        .container { max-width: 1300px; margin: auto; }
         h1 { color: #00d2ff; margin-bottom: 5px; }
         .controls { margin-bottom: 15px; display: flex; gap: 10px; align-items: center; }
-        input[type="text"] { padding: 10px 14px; border-radius: 6px; border: 1px solid #333; background: #1e1e24; color: #fff; font-size: 16px; width: 300px; }
+        input[type="text"] { padding: 10px 14px; border-radius: 6px; border: 1px solid #333; background: #1e1e24; color: #fff; font-size: 15px; width: 450px; }
         button { padding: 10px 20px; border-radius: 6px; border: none; background: #00d2ff; color: #000; font-weight: bold; cursor: pointer; font-size: 15px; }
         button:hover { background: #33e1ff; }
-        .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .grid { display: grid; grid-template-columns: 1.8fr 1.2fr; gap: 20px; }
         .video-box { background: #000; border-radius: 8px; overflow: hidden; position: relative; border: 1px solid #2d2d38; }
         #live-img { width: 100%; height: auto; display: block; min-height: 480px; }
-        .json-box { background: #1a1a22; border-radius: 8px; padding: 15px; overflow-y: auto; max-height: 520px; border: 1px solid #2d2d38; font-family: monospace; font-size: 13px; }
+        .json-box { background: #1a1a22; border-radius: 8px; padding: 15px; overflow-y: auto; max-height: 520px; border: 1px solid #2d2d38; font-family: monospace; font-size: 12px; }
         .badge { background: #28a745; padding: 4px 8px; border-radius: 4px; font-size: 12px; margin-left: 10px; }
         pre { margin: 0; white-space: pre-wrap; word-break: break-all; }
+        .helper-text { color: #888; font-size: 13px; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Kaggle GPU 3D Perception & Grasping <span class="badge" id="status-badge">Connected</span></h1>
-        <p style="color: #888; margin-top: 0;">Grounding DINO + SAM + 6-DoF Grasp Pose Stream</p>
+        <h1>3D Perception & Pick-and-Place <span class="badge" id="status-badge">Connected</span></h1>
+        <p style="color: #aaa; margin-top: 0;">Grounding DINO + SAM + 6-DoF Grasp + Tabletop Placement Zone</p>
         
         <div class="controls">
-            <input type="text" id="prompt-input" value="cup" placeholder="Enter prompt e.g. bottle, cup, box">
-            <button onclick="updatePrompt()">Update Target</button>
+            <input type="text" id="prompt-input" value="pick up the cup and place it near laptop" placeholder="e.g. pick up the cup and place it near laptop">
+            <button onclick="updatePrompt()">Send Command</button>
             <span id="fps-label" style="color: #aaa; margin-left: auto;">FPS: --</span>
         </div>
+        <div class="helper-text">Examples: "pick up the cup and place it near laptop" | "grasp bottle and put on table" | "cup"</div>
 
-        <div class="grid">
+        <div class="grid" style="margin-top: 15px;">
             <div class="video-box">
                 <img id="live-img" src="" alt="Waiting for camera stream from local PC...">
             </div>
@@ -141,7 +132,6 @@ HTML_DASHBOARD = """
 </html>
 """
 
-# Viewer websocket clients
 active_viewers = set()
 
 
@@ -154,7 +144,7 @@ def index():
 def set_prompt(prompt: str):
     global current_prompt
     current_prompt = prompt.strip()
-    print(f"[*] Target prompt updated to: {current_prompt}")
+    print(f"[*] Target command updated to: {current_prompt}")
     return {"status": "ok", "prompt": current_prompt}
 
 
@@ -176,7 +166,7 @@ async def websocket_camera_stream(websocket: WebSocket):
     Client sends binary packet:
       [4 bytes metadata json length] + [metadata JSON bytes] + [JPEG color bytes] + [zlib-compressed uint16 depth bytes]
     """
-    global current_prompt
+    global current_prompt, pipeline
     await websocket.accept()
     print("[+] Local Orbbec Camera connected to Kaggle GPU Server!")
 
@@ -221,45 +211,12 @@ async def websocket_camera_stream(websocket: WebSocket):
             t0 = time.time()
             prompt = meta_json.get("prompt", current_prompt)
 
-            # 1. Grounded-SAM (CUDA)
-            detections = detector.detect_and_segment(
-                image_bgr=color_bgr,
-                text_prompt=prompt,
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
-            )
-
-            # 2. 3D & 6-DoF Grasp calculation
-            objects_3d = []
-            annotated_image = color_bgr.copy()
-
-            for det in detections:
-                obj_3d = grasp_estimator.compute_object_and_grasp(
-                    label=det.label,
-                    confidence=det.confidence,
-                    mask=det.mask,
-                    depth_m=depth_m,
-                    intrinsics=intrinsics,
-                )
-                if obj_3d is not None:
-                    objects_3d.append(obj_3d)
-
-                color = visualizer.PALETTE[len(objects_3d) % len(visualizer.PALETTE)]
-                visualizer.overlay_mask(annotated_image, det.mask, color=color, alpha=0.4)
-                x1, y1, x2, y2 = [int(v) for v in det.bbox_xyxy]
-                cv2.rectangle(annotated_image, (x1, y1), (x2, y2), color, 2)
-
-            # 3. 3D Coordinate frame projection & HUD
-            annotated_image = visualizer.render(
-                image_bgr=annotated_image,
-                objects_3d=objects_3d,
-                intrinsics=intrinsics,
+            objects_3d, detections, annotated_image, payload = pipeline.process_frame(
                 prompt=prompt,
-                camera_name="Orbbec Gemini E (via Kaggle GPU)",
+                color_bgr=color_bgr,
+                depth_m=depth_m,
+                intrinsics=intrinsics,
             )
-
-            # Build JSON output
-            payload = build_json_payload(prompt, objects_3d, intrinsics)
             payload["inference_time_ms"] = round((time.time() - t0) * 1000.0, 1)
 
             # Encode annotated frame to JPEG for viewers
@@ -281,72 +238,6 @@ async def websocket_camera_stream(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print("[-] Local camera streamer disconnected.")
-
-
-def build_json_payload(prompt, objects_3d, intrinsics):
-    items = []
-    for obj in objects_3d:
-        p = obj.grasp_pose
-        items.append({
-            "label": obj.label,
-            "confidence": obj.confidence,
-            "num_3d_points": obj.num_points,
-            "3d_location_wrt_camera": {
-                "units": "meters",
-                "x": obj.center_3d[0],
-                "y": obj.center_3d[1],
-                "z": obj.center_3d[2],
-                "xyz_list": obj.center_3d,
-                "xyz_mm": obj.center_3d_mm,
-                "bounding_box_extent_xyz_m": obj.bbox_3d_extent_m,
-            },
-            "grasp": {
-                "location_xyz": {
-                    "units": "meters",
-                    "x": p.location_xyz[0],
-                    "y": p.location_xyz[1],
-                    "z": p.location_xyz[2],
-                    "xyz_list": p.location_xyz,
-                    "xyz_mm": p.location_xyz_mm,
-                },
-                "orientation": {
-                    "convention": p.rpy.convention,
-                    "roll_pitch_yaw_deg": {
-                        "roll": p.rpy.roll_deg,
-                        "pitch": p.rpy.pitch_deg,
-                        "yaw": p.rpy.yaw_deg,
-                    },
-                    "roll_pitch_yaw_rad": {
-                        "roll": p.rpy.roll_rad,
-                        "pitch": p.rpy.pitch_rad,
-                        "yaw": p.rpy.yaw_rad,
-                    },
-                    "quaternion_wxyz": {
-                        "qw": p.quaternion_wxyz[0],
-                        "qx": p.quaternion_wxyz[1],
-                        "qy": p.quaternion_wxyz[2],
-                        "qz": p.quaternion_wxyz[3],
-                        "wxyz_list": p.quaternion_wxyz,
-                    },
-                    "rotation_matrix_3x3": p.rotation_matrix,
-                    "planar_yaw_angle_deg": p.planar_angle_deg,
-                },
-                "gripper": {
-                    "required_width_m": p.grasp_width_m,
-                    "required_width_mm": p.grasp_width_mm,
-                    "approach_vector": p.approach_vector,
-                    "pre_grasp_standoff_xyz_m": p.pre_grasp_xyz,
-                },
-            },
-        })
-
-    return {
-        "status": "SUCCESS" if len(objects_3d) > 0 else "NO_OBJECT",
-        "timestamp": time.time(),
-        "prompt": prompt,
-        "count": len(objects_3d),
-        "objects": items,
-    }
 
 
 def start_server(port: int = 8000):

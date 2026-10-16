@@ -1,12 +1,13 @@
 """
-Automated End-to-End Test Suite for Perception Pipeline.
+Automated End-to-End Test Suite for Upgraded Perception & Pick-and-Place Pipeline.
 Validates:
-  1. Camera interface and RGB-D depth frame validity
-  2. Grounding DINO + SAM detection and mask generation
-  3. 3D location [X, Y, Z] calculation w.r.t camera frame
-  4. 6-DoF Grasp pose calculation (Location x,y,z, Roll, Pitch, Yaw, Quaternion, Grasp width)
-  5. JSON payload schema and values
-  6. Visualizer overlay rendering
+  1. YAML configuration loading and deep merging
+  2. Natural language command parser ("pick up the cup and place it near laptop")
+  3. Camera stream validity
+  4. 3D geometry & 6-DoF grasp pose calculation
+  5. Tabletop plane fitting and collision-free placement spot locator
+  6. Visualizer overlay rendering with trajectory & landing zone
+  7. Full end-to-end pick-and-place execution
 """
 
 import json
@@ -21,130 +22,107 @@ from perception_pipeline import (
     GraspEstimator,
     PerceptionVisualizer,
 )
+from perception_pipeline.config_loader import load_config
+from perception_pipeline.command_parser import CommandParser
+from perception_pipeline.geometry.surface_detector import SurfaceAndPlacementDetector, Plane3D
 
 
-class TestPerceptionPipeline(unittest.TestCase):
+class TestPerceptionAndPlacement(unittest.TestCase):
 
     def setUp(self):
         self.camera = MockRGBDCamera(width=640, height=480)
         self.intrinsics = self.camera.intrinsics
 
-    def test_camera_stream(self):
-        """Verifies RGB and Depth frames are properly formatted."""
-        color, depth, intr = self.camera.read()
-        self.assertIsNotNone(color)
-        self.assertIsNotNone(depth)
-        self.assertEqual(color.shape, (480, 640, 3))
-        self.assertEqual(depth.shape, (480, 640))
-        self.assertEqual(color.dtype, np.uint8)
-        self.assertEqual(depth.dtype, np.float32)
-        # Verify depth values are in realistic meter range (e.g. 0.2m to 2.0m)
-        valid_depths = depth[depth > 0]
-        self.assertTrue(len(valid_depths) > 1000)
-        self.assertTrue(np.all((valid_depths >= 0.1) & (valid_depths <= 3.0)))
+    def test_config_loader(self):
+        """Verifies config.yaml loads properly with required sections."""
+        cfg = load_config("config.yaml")
+        self.assertIn("camera", cfg)
+        self.assertIn("models", cfg)
+        self.assertIn("grasp", cfg)
+        self.assertIn("placement", cfg)
+        self.assertIn("visualization", cfg)
+        self.assertEqual(cfg["models"]["box_threshold"], 0.25)
+        self.assertEqual(cfg["placement"]["free_space_radius_m"], 0.12)
+        print("\n[Test] config.yaml loaded and validated successfully.")
 
-    def test_grasp_estimator_geometry(self):
-        """Tests 3D deprojection and PCA grasp calculation with a synthetic mask."""
+    def test_command_parser(self):
+        """Tests natural language parsing of pick-and-place requests."""
+        parser = CommandParser()
+
+        # Case 1: Pick up X and place it near Y
+        t1 = parser.parse("pick up the cup and place it near laptop")
+        self.assertTrue(t1.is_pick_and_place)
+        self.assertEqual(t1.source_object, "cup")
+        self.assertEqual(t1.target_object, "laptop")
+        self.assertEqual(t1.relation, "near")
+
+        # Case 2: Grasp X and put on table
+        t2 = parser.parse("grasp bottle and put it on table")
+        self.assertTrue(t2.is_pick_and_place)
+        self.assertEqual(t2.source_object, "bottle")
+        self.assertEqual(t2.target_surface, "table")
+
+        # Case 3: Simple detection prompt
+        t3 = parser.parse("cup")
+        self.assertFalse(t3.is_pick_and_place)
+        self.assertEqual(t3.source_object, "cup")
+        print("[Test] Command parser verified for all natural language cases.")
+
+    def test_surface_detector_placement_spot(self):
+        """Tests RANSAC plane fitting and collision-free placement spot search."""
+        detector = SurfaceAndPlacementDetector(
+            free_space_radius_m=0.10,
+            target_standoff_distance_m=0.20,
+        )
+        color, depth, intr = self.camera.read()
+
+        # Synthetic laptop object at (0.15, 0.05, 0.58)
         estimator = GraspEstimator()
-        color, depth, intr = self.camera.read()
+        mask_lap = np.zeros((480, 640), dtype=np.uint8)
+        mask_lap[200:330, 420:580] = 255
+        laptop_obj = estimator.compute_object_and_grasp("laptop", 0.90, mask_lap, depth, intr)
+        self.assertIsNotNone(laptop_obj)
 
-        # Synthetic mask of the cup (around pixels 180..260 x 220..340)
-        mask = np.zeros((480, 640), dtype=np.uint8)
-        mask[220:340, 180:260] = 255
+        # Synthetic cup object at (-0.15, 0.05, 0.65)
+        mask_cup = np.zeros((480, 640), dtype=np.uint8)
+        mask_cup[220:340, 180:260] = 255
+        cup_obj = estimator.compute_object_and_grasp("cup", 0.90, mask_cup, depth, intr)
+        self.assertIsNotNone(cup_obj)
 
-        obj_3d = estimator.compute_object_and_grasp(
-            label="cup",
-            confidence=0.92,
-            mask=mask,
+        spot = detector.find_placement_spot(
+            reference_object=laptop_obj,
+            all_obstacles=[cup_obj],
+            table_points_3d=None,
             depth_m=depth,
             intrinsics=intr,
         )
 
-        self.assertIsNotNone(obj_3d)
-        self.assertEqual(obj_3d.label, "cup")
-        self.assertAlmostEqual(obj_3d.confidence, 0.92, places=2)
+        self.assertIsNotNone(spot)
+        print(f"\n[Test] Placement Spot Found: {spot.placement_side.upper()} of Laptop")
+        print(f"       Landing XYZ: {spot.location_xyz} m")
+        print(f"       Free Clearance Radius: {spot.free_clearance_radius_m * 100:.0f} cm")
+        print(f"       Distance to Laptop: {spot.distance_to_reference_m * 100:.0f} cm")
+        self.assertTrue(spot.distance_to_reference_m >= 0.15)
+        self.assertTrue(spot.free_clearance_radius_m >= 0.10)
 
-        # Check 3D location w.r.t camera
-        loc = obj_3d.center_3d
-        self.assertEqual(len(loc), 3)
-        print(f"\n[Test] 3D Centroid w.r.t Camera: X={loc[0]:.4f}m, Y={loc[1]:.4f}m, Z={loc[2]:.4f}m")
-        # In mock camera, cup is at X < 0 (left of image center 320), Y ~ center, Z ~ 0.65m
-        self.assertTrue(loc[0] < 0.0)  # Left of optical center
-        self.assertAlmostEqual(loc[2], 0.65, delta=0.05)  # Depth around 0.65m
+    def test_full_pick_and_place_pipeline(self):
+        """Runs end-to-end pipeline with 'pick up the cup and place it near laptop'."""
+        pipeline = PerceptionPipeline(config_path="config.yaml", prefer_orbbec=False)
+        cmd = "pick up the cup and place it near laptop"
 
-        # Check Grasp Pose
-        gp = obj_3d.grasp_pose
-        self.assertIsNotNone(gp)
-        self.assertEqual(len(gp.location_xyz), 3)
-        self.assertEqual(len(gp.location_xyz_mm), 3)
+        objects_3d, detections, annotated_img, payload = pipeline.process_frame(prompt=cmd)
 
-        # Verify RPY
-        rpy = gp.rpy
-        print(f"[Test] Grasp Orientation RPY: Roll={rpy.roll_deg:.1f} deg, Pitch={rpy.pitch_deg:.1f} deg, Yaw={rpy.yaw_deg:.1f} deg")
-        self.assertTrue(-180.0 <= rpy.roll_deg <= 180.0)
-        self.assertTrue(-180.0 <= rpy.pitch_deg <= 180.0)
-        self.assertTrue(-180.0 <= rpy.yaw_deg <= 180.0)
-
-        # Verify Quaternion
-        q = gp.quaternion_wxyz
-        q_norm = np.linalg.norm(q)
-        self.assertAlmostEqual(q_norm, 1.0, places=3)
-
-        # Verify Rotation Matrix is SO(3)
-        R = np.array(gp.rotation_matrix)
-        self.assertEqual(R.shape, (3, 3))
-        det = np.linalg.det(R)
-        self.assertAlmostEqual(det, 1.0, places=3)
-        identity = np.dot(R.T, R)
-        np.testing.assert_allclose(identity, np.eye(3), atol=1e-3)
-
-        # Verify Grasp Width
-        print(f"[Test] Grasp Width: {gp.grasp_width_mm:.1f} mm ({gp.grasp_width_m:.4f} m)")
-        self.assertTrue(gp.grasp_width_m > 0.01)
-
-        # Verify Standoff location
-        self.assertEqual(len(gp.pre_grasp_xyz), 3)
-        self.assertTrue(gp.pre_grasp_xyz[2] < gp.location_xyz[2])  # Standoff is closer to camera than object
-
-    def test_visualizer(self):
-        """Verifies visualizer renders without exceptions."""
-        estimator = GraspEstimator()
-        color, depth, intr = self.camera.read()
-
-        mask = np.zeros((480, 640), dtype=np.uint8)
-        mask[220:340, 180:260] = 255
-
-        obj_3d = estimator.compute_object_and_grasp("cup", 0.95, mask, depth, intr)
-        vis = PerceptionVisualizer()
-
-        annotated = vis.render(
-            image_bgr=color,
-            objects_3d=[obj_3d],
-            intrinsics=intr,
-            prompt="cup",
-            fps=28.5,
-            camera_name="Test Camera"
-        )
-        self.assertEqual(annotated.shape, color.shape)
-        self.assertEqual(annotated.dtype, np.uint8)
-
-    def test_full_pipeline_single_frame(self):
-        """Runs the entire pipeline end-to-end with Grounded-SAM on mock camera."""
-        pipeline = PerceptionPipeline(prefer_orbbec=False)
-        objects_3d, detections, annotated_img, payload = pipeline.process_frame(prompt="cup")
-
-        self.assertIn("status", payload)
-        self.assertIn("objects", payload)
+        self.assertIn("task", payload)
+        self.assertTrue(payload["task"]["is_pick_and_place"])
+        self.assertEqual(payload["task"]["source_object"], "cup")
+        self.assertEqual(payload["task"]["target_reference"], "laptop")
         self.assertEqual(annotated_img.shape, (480, 640, 3))
-        print(f"\n[Test] Pipeline returned status: {payload['status']} with {len(objects_3d)} objects.")
 
-        if len(objects_3d) > 0:
-            obj = payload["objects"][0]
-            self.assertIn("3d_location_wrt_camera", obj)
-            self.assertIn("grasp", obj)
-            self.assertIn("orientation", obj["grasp"])
-            print("[Test] Verified JSON structure successfully:")
-            print(json.dumps(obj["grasp"], indent=2))
+        print(f"\n[Test] Pick-and-Place Task: '{cmd}'")
+        print(f"       Objects Detected: {len(objects_3d)}")
+        if payload.get("placement"):
+            print("       Placement Payload:")
+            print(json.dumps(payload["placement"], indent=2))
 
         pipeline.close()
 

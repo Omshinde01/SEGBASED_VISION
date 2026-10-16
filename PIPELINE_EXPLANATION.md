@@ -1,4 +1,4 @@
-# 🤖 3D Perception & 6-DoF Robotic Grasping Pipeline
+# 🤖 3D Perception, Robotic Grasping & Pick-and-Place Pipeline
 ### *A Practical, Plain-English Guide to Vision-Guided Manipulation*
 
 ---
@@ -8,24 +8,24 @@
 Imagine your robot has an eye (the **Orbbec Gemini E** camera) and a hand (a **parallel-jaw or multi-finger gripper**).
 
 If you tell your robot:
-> *"Pick up that coffee cup on the desk."*
+> *"Pick up the cup and place it near laptop"*
 
-The robot cannot just reach blindly. It needs to know:
-1. **Which pixels in the camera image belong to the cup?** (Not the desk, not a book, not the background).
-2. **Where is that cup in 3D physical space relative to the camera?** ($X, Y, Z$ in meters / millimeters).
-3. **How should the gripper orient itself so it doesn't crash or drop it?** (Roll, Pitch, Yaw, Quaternions, and Grasp Width).
-4. **Where should the hand wait first before touching the cup?** (Pre-grasp standoff).
-
-This pipeline solves the entire journey from **human voice/text prompt $\rightarrow$ live 2D RGB-D images $\rightarrow$ pixel-accurate 3D reconstruction $\rightarrow$ 6-DoF grasp pose $\rightarrow$ robot trajectory planning**.
+The robot needs to know:
+1. **Which object to pick?** Detects the cup, isolates its exact pixels via SAM, and computes its **3D grasp location $(X, Y, Z)$ and 6-DoF orientation (Roll, Pitch, Yaw, Quaternions)**.
+2. **Where is the reference object (laptop)?** Detects and locates the laptop in 3D physical coordinates.
+3. **Where is the supporting surface (table)?** Fits a 3D plane to the tabletop surface using RANSAC.
+4. **Where is there free, obstacle-free space to put the cup?** Scans the table around the laptop to guarantee a safe landing zone with at least 12 cm clearance radius.
+5. **How should all parameters be tuned?** Managed cleanly via [config.yaml](file:///C:/Omshinde/Projects/Perception-skandha/Segmentation_based_vision/config.yaml).
 
 ```mermaid
-flowchart LR
-    A["User Prompt\n('cup', 'bottle')"] --> D["Grounding DINO\n(2D Box Detection)"]
-    Cam["Orbbec Gemini E\n(RGB + Depth)"] --> D
-    D --> S["SAM (Segment Anything)\n(Pixel-Perfect Mask)"]
-    Cam --> G["Grasp Estimator\n(Pin-hole Deprojection + 3D PCA)"]
-    S --> G
-    G --> R["Robot Controller\n(XYZ, RPY, Quaternions, Width)"]
+flowchart TD
+    Prompt["Command: 'pick up the cup and place it near laptop'"] --> Parser["Natural Language Parser\n(Source: cup, Target: laptop)"]
+    Cam["Orbbec Gemini E\n(RGB + Depth Frame)"] --> Models
+    Parser --> Models["Grounding DINO + SAM\n(CUDA / CPU)"]
+    Models --> Grasp["Grasp Estimator (PCA)\n- Cup 3D Loc [X, Y, Z]\n- RPY, Quat, Grasp Width"]
+    Models --> Surface["Surface & Placement Detector\n- Tabletop Plane RANSAC\n- Obstacle Clearance Scan"]
+    Grasp --> Planner["Robot Trajectory Controller\n(Pick -> Lift -> Transfer -> Place)"]
+    Surface --> Planner
 ```
 
 ---

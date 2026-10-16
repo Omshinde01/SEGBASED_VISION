@@ -104,10 +104,16 @@ def parse_args():
         description="Prompt-based 3D Perception & Grasping Pipeline using Orbbec Gemini E & Grounded-SAM."
     )
     parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to YAML configuration file (default: config.yaml).",
+    )
+    parser.add_argument(
         "--prompt", "-p",
         type=str,
-        default="cup",
-        help="Initial object text prompt (e.g. 'cup', 'bottle', 'box')."
+        default="pick up the cup and place it near laptop",
+        help="Natural language prompt (e.g. 'pick up the cup and place it near laptop' or 'cup').",
     )
     parser.add_argument(
         "--camera", "-c",
@@ -151,8 +157,9 @@ def main():
     args = parse_args()
     prefer_orbbec = (args.camera != "mock")
 
-    # Initialize Pipeline
+    # Initialize Pipeline with config.yaml
     pipeline = PerceptionPipeline(
+        config_path=args.config,
         prefer_orbbec=prefer_orbbec,
         box_threshold=args.box_threshold,
         text_threshold=args.text_threshold,
@@ -163,16 +170,16 @@ def main():
     if not args.single_frame:
         controller.start()
 
-    print("\n" + "=" * 65)
+    print("\n" + "=" * 68)
     print(" PIPELINE ACTIVE")
-    print(f" Target Object Prompt: '{args.prompt}'")
+    print(f" Target Prompt: '{args.prompt}'")
     print(" Terminal commands:")
-    print("   p <name> : change prompt   (e.g.  p bottle)")
+    print("   p <cmd>  : change command (e.g.  p pick up bottle and put on table)")
     print("   s        : save snapshot & JSON")
     print("   q        : quit")
-    print("=" * 65 + "\n")
+    print("=" * 68 + "\n")
 
-    window_name = "Perception Pipeline - 3D Grasp & Grounded-SAM"
+    window_name = "Perception & Pick-and-Place (3D Grasp + Placement Zone)"
     if not args.headless:
         cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
@@ -192,19 +199,24 @@ def main():
             dt = time.time() - t0
             fps = 1.0 / max(dt, 1e-4)
 
-            # Print JSON summary
-            if len(objects_3d) > 0:
-                print(f"[Detected {len(objects_3d)} object(s) for '{current_prompt}'] (Inference: {dt*1000:.1f}ms):")
-                for obj in objects_3d:
-                    p = obj.grasp_pose
-                    print(f"  >> Label: {obj.label} (Conf: {obj.confidence:.2f})")
-                    print(f"     3D Loc (wrt camera): X={p.location_xyz[0]:+.3f}m, Y={p.location_xyz[1]:+.3f}m, Z={p.location_xyz[2]:.3f}m")
-                    print(f"     Grasp Orientation:   Roll={p.rpy.roll_deg:+.1f} deg, Pitch={p.rpy.pitch_deg:+.1f} deg, Yaw={p.rpy.yaw_deg:+.1f} deg")
-                    print(f"     Grasp Width:         {p.grasp_width_mm:.1f} mm | Planar Yaw: {p.planar_angle_deg:+.1f} deg")
-                    print(f"     Approach Vector:     {p.approach_vector}")
-                    print(f"     Pre-grasp Standoff:  {p.pre_grasp_xyz}")
-            else:
-                print(f"[No objects matching prompt '{current_prompt}'] (Inference: {dt*1000:.1f}ms)", end="\r")
+            # Print Pick & Place summary
+            task_info = payload.get("task", {})
+            placement = payload.get("placement")
+
+            print(f"\n[Command: '{current_prompt}'] | Objects: {len(objects_3d)} (Inference: {dt*1000:.1f}ms):")
+            for obj in objects_3d:
+                p = obj.grasp_pose
+                role = " [PICK TARGET]" if obj.label == task_info.get("source_object") else ""
+                print(f"  >> {obj.label.upper()}{role} (Conf: {obj.confidence:.2f})")
+                print(f"     3D Loc (camera): X={p.location_xyz[0]:+.3f}m, Y={p.location_xyz[1]:+.3f}m, Z={p.location_xyz[2]:.3f}m")
+                print(f"     Grasp RPY:       Roll={p.rpy.roll_deg:+.1f}*, Pitch={p.rpy.pitch_deg:+.1f}*, Yaw={p.rpy.yaw_deg:+.1f}* | Width: {p.grasp_width_mm:.0f}mm")
+
+            if placement:
+                p_loc = placement["target_location_xyz"]["xyz_list"]
+                print(f"  >> PLACEMENT LANDING ZONE ({placement['placement_side'].upper()} of {placement['reference_object']}):")
+                print(f"     Release Loc (camera): X={p_loc[0]:+.3f}m, Y={p_loc[1]:+.3f}m, Z={p_loc[2]:.3f}m")
+                print(f"     Clearance Radius:     {placement['free_clearance_radius_m']*100:.0f} cm free obstacle space")
+                print(f"     Pre-place Standoff:   {placement['pre_place_standoff_xyz_m']}")
 
             if save_req:
                 save_snapshot(annotated_img, payload, output_dir)

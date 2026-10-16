@@ -1,0 +1,162 @@
+{
+  "status": "SUCCESS",
+  "timestamp": 1792137510.8234925,
+  "camera": {
+    "name": "Mock RGB-D (Simulation)",
+    "is_hardware": false,
+    "intrinsics": {
+      "fx": 580.0,
+      "fy": 580.0,
+      "cx": 320.0,
+      "cy": 240.0,
+      "width": 640,
+      "height": 480
+    }
+  },
+  "task": {
+    "raw_prompt": "pick up the cup and place it near laptop",
+    "is_pick_and_place": true,
+    "source_object": "cup",
+    "target_reference": "laptop",
+    "target_surface": "table",
+    "relation": "near"
+  },
+  "count": 1,
+  "objects": [
+    {
+      "label": "cup",
+      "confidence": 0.7184322476387024,
+      "is_pick_target": true,
+      "is_place_reference": false,
+      "3d_location_wrt_camera": {
+        "units": "meters",
+        "x": -0.1173,
+        "y": 0.0459,
+        "z": 0.6505,
+        "xyz_list": [
+          -0.1173,
+          0.0459,
+          0.6505
+        ],
+        "xyz_mm": [
+          -117.3,
+          45.9,
+          650.5
+        ],
+        "bounding_box_extent_xyz_m": [
+          0.1465,
+          0.1558,
+          0.1422
+        ]
+      },
+      "grasp": {
+        "location_xyz": {
+          "units": "meters",
+          "x": -0.1173,
+          "y": 0.0459,
+          "z": 0.6505,
+          "xyz_list": [
+            -0.1173,
+            0.0459,
+            0.6505
+          ],
+          "xyz_mm": [
+            -117.3,
+            45.9,
+            650.5
+          ]
+        },
+        "orientation": {
+          "convention": "XYZ_extrinsic_zyx_intrinsic",
+          "roll_pitch_yaw_deg": {
+            "roll": -10.45,
+            "pitch": 3.34,
+            "yaw": 86.16
+          },
+          "quaternion_wxyz": {
+            "qw": 0.72524,
+            "qx": -0.08626,
+            "qy": -0.04098,
+            "qz": 0.68184,
+            "wxyz_list": [
+              0.72524,
+              -0.08626,
+              -0.04098,
+              0.68184
+            ]
+          },
+          "rotation_matrix_3x3": [
+            [
+              0.0668,
+              -0.9819,
+              -0.1771
+            ],
+            [
+              0.9961,
+              0.0553,
+              0.0692
+            ],
+            [
+              -0.0582,
+              -0.181,
+              0.9818
+            ]
+          ],
+          "planar_yaw_angle_deg": 90.0
+        },
+        "gripper": {
+          "required_width_m": 0.1657,
+          "required_width_mm": 165.7,
+          "approach_vector": [
+            -0.1771,
+            0.0692,
+            0.9818
+          ],
+          "pre_grasp_standoff_xyz_m": [
+            -0.0996,
+            0.0389,
+            0.5523
+          ]
+        }
+      }
+    }
+  ],
+  "placement": {
+    "status": "VALID_SPOT_FOUND",
+    "reference_object": "cup",
+    "placement_side": "right",
+    "target_location_xyz": {
+      "units": "meters",
+      "x": 0.1027,
+      "y": 0.1438,
+      "z": 0.6505,
+      "xyz_list": [
+        0.1027,
+        0.1438,
+        0.6505
+      ],
+      "xyz_mm": [
+        102.7,
+        143.8,
+        650.5
+      ]
+    },
+    "pre_place_standoff_xyz_m": [
+      0.1027,
+      0.2438,
+      0.6505
+    ],
+    "release_approach_vector": [
+      -0.0,
+      1.0,
+      -0.0
+    ],
+    "surface_normal": [
+      0.0,
+      -1.0,
+      0.0
+    ],
+    "free_clearance_radius_m": 0.12,
+    "distance_to_reference_m": 0.241
+  }
+}

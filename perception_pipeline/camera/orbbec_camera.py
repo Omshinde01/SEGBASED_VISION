@@ -311,11 +311,13 @@ class MockRGBDCamera:
         cv2.putText(color, "BOTTLE", (bot_x1 + 5, bot_y2 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         depth_m[bot_y1:bot_y2, bot_x1:bot_x2] = 0.68
 
-        # Object 3: Red Box / Cube
-        box_x1, box_y1, box_x2, box_y2 = 480, 260, 570, 360
-        cv2.rectangle(color, (box_x1, box_y1), (box_x2, box_y2), (30, 30, 220), -1)
-        cv2.putText(color, "BOX", (box_x1 + 15, box_y2 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        depth_m[box_y1:box_y2, box_x1:box_x2] = 0.62
+        # Object 3: Laptop (Grey clam-shell laptop next to cup)
+        lap_x1, lap_y1, lap_x2, lap_y2 = 420, 200, 580, 330
+        cv2.rectangle(color, (lap_x1, lap_y1), (lap_x2, lap_y2), (70, 70, 75), -1)
+        cv2.rectangle(color, (lap_x1 + 10, lap_y1 + 10), (lap_x2 - 10, lap_y2 - 35), (20, 20, 25), -1)
+        cv2.rectangle(color, (lap_x1, lap_y2 - 30), (lap_x2, lap_y2), (100, 100, 105), -1)
+        cv2.putText(color, "LAPTOP", (lap_x1 + 30, lap_y1 + 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240, 240, 240), 2)
+        depth_m[lap_y1:lap_y2, lap_x1:lap_x2] = 0.58
 
         noise = np.random.normal(0, 0.002, depth_m.shape).astype(np.float32)
         depth_m = np.clip(depth_m + noise, 0.1, 5.0)
